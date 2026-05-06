@@ -1,8 +1,8 @@
 use anyhow::Result;
 use scraper::{Html, Selector};
 
-fn fetch_package_count(url: &str) -> Result<u32> {
-    let body = reqwest::blocking::get(url)?.text()?;
+async fn fetch_package_count(url: &str) -> Result<u32> {
+    let body = reqwest::get(url).await?.text().await?;
     let document = Html::parse_document(&body);
 
     let div_selector = Selector::parse("div.pkglist-stats").unwrap();
@@ -19,20 +19,17 @@ fn fetch_package_count(url: &str) -> Result<u32> {
         .text()
         .collect::<String>();
 
-    // 文本示例："295 matching packages found.\nPage 1 of 3."
-    // 按空白字符分割，第一个单词就是数字
-    let first_word = p_text
+    let count = p_text
         .split_whitespace()
         .next()
-        .ok_or_else(|| anyhow::anyhow!("文本为空"))?;
-
-    let count = first_word.parse::<u32>()?;
+        .ok_or_else(|| anyhow::anyhow!("文本为空"))?
+        .parse::<u32>()?;
     Ok(count)
 }
-fn main() -> Result<()> {
-    let url = "https://aur.archlinux.org/";
-    let body = reqwest::blocking::get(url)?.text()?;
 
+async fn fetch_aur_stats() -> Result<Vec<String>> {
+    let url = "https://aur.archlinux.org/";
+    let body = reqwest::get(url).await?.text().await?;
     let document = Html::parse_document(&body);
 
     let div_selector = Selector::parse("div#pkg-stats").expect("Failed to parse stats.");
@@ -60,14 +57,11 @@ fn main() -> Result<()> {
             eprintln!("{table_data:#?}");
         }
     }
+    Ok(results)
+}
 
-    println!("{:<35} Value", "Statistic");
-    println!("{}", "-".repeat(50));
-    for [desc, value] in results.as_chunks().0 {
-        println!("{desc:<35} {value}");
-    }
-
-    // --- 新增：抓取官方仓库包数量 ---
+#[tokio::main]
+async fn main() -> Result<()> {
     let repos = [
         (
             "Core",
@@ -83,19 +77,45 @@ fn main() -> Result<()> {
         ),
     ];
 
+    let aur_task = tokio::spawn(fetch_aur_stats());
+    let mut repo_tasks = Vec::new();
+    for (name, url) in repos {
+        let task = tokio::spawn(async move {
+            match fetch_package_count(url).await {
+                Ok(count) => (name, Some(count)),
+                Err(e) => {
+                    eprintln!("Failed to fetch {name} count: {e}");
+                    (name, None)
+                }
+            }
+        });
+        repo_tasks.push(task);
+    }
+
+    let aur_results = aur_task.await??;
+
+    let mut repo_counts = Vec::new();
+    for task in repo_tasks {
+        repo_counts.push(task.await?);
+    }
+
+    println!("{:<35} Value", "Statistic");
+    println!("{}", "-".repeat(50));
+    for [desc, value] in aur_results.as_chunks().0 {
+        println!("{desc:<35} {value}");
+    }
+
     println!("\n{:<35} Value", "Official Repository");
     println!("{}", "-".repeat(50));
     let mut total = 0;
-    for (name, url) in repos {
-        match fetch_package_count(url) {
-            Ok(count) => {
-                println!("{name:<35} {count}");
-                total += count;
-            }
-            Err(e) => eprintln!("Failed to fetch {name} count: {e}"),
+    for (name, count_opt) in repo_counts {
+        if let Some(count) = count_opt {
+            println!("{name:<35} {count}");
+            total += count;
+        } else {
+            println!("{name:<35} Error");
         }
     }
-    println!("{:<35} {total}", "Total");
-
+    println!("{:<35} {}", "Total", total);
     Ok(())
 }
