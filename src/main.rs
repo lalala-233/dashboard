@@ -32,11 +32,13 @@ async fn fetch_aur_stats() -> Result<Vec<String>> {
     let body = reqwest::get(url).await?.text().await?;
     let document = Html::parse_document(&body);
 
-    let div_selector = Selector::parse("div#pkg-stats").expect("Failed to parse stats.");
+    let div_selector = Selector::parse("div#pkg-stats")
+        .map_err(|_| anyhow::anyhow!("Failed to parse aur stats."))?;
+
     let stats_div = document
         .select(&div_selector)
         .next()
-        .ok_or_else(|| anyhow::anyhow!("could not find div with `id='pkg-stats'`"))?;
+        .ok_or_else(|| anyhow::anyhow!("Could not find div with `id='pkg-stats'`"))?;
 
     let row_selector = Selector::parse("tr").unwrap();
     let rows = stats_div.select(&row_selector);
