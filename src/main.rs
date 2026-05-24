@@ -36,7 +36,7 @@ async fn fetch_aur_stats() -> Result<Vec<String>> {
     let stats_div = document
         .select(&div_selector)
         .next()
-        .ok_or_else(|| anyhow::anyhow!("未找到 id='pkg-stats' 的 div"))?;
+        .ok_or_else(|| anyhow::anyhow!("could not find div with `id='pkg-stats'`"))?;
 
     let row_selector = Selector::parse("tr").unwrap();
     let rows = stats_div.select(&row_selector);
