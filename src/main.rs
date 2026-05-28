@@ -1,6 +1,25 @@
 use anyhow::Result;
 use scraper::{Html, Selector};
+// Use API to get official package count
+//
+// Slower because ArchLinux has rate limit.
+async fn _fetch_official_package_count_by_api(repo: &str) -> Result<u32> {
+    let url = format!("https://archlinux.org/packages/search/json/?repo={repo}&limit=1");
+    let body = reqwest::get(&url).await?.text().await?;
 
+    let key = "\"count\":";
+    let rest = body
+        .rsplit(key)
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No `count` field in {repo} json"))?;
+    let count_str = rest
+        .split(',')
+        .next()
+        .unwrap_or(rest)
+        .trim_start()
+        .trim_end_matches('}');
+    Ok(count_str.parse()?)
+}
 async fn fetch_package_count(url: &str) -> Result<u32> {
     let body = reqwest::get(url).await?.text().await?;
     let document = Html::parse_document(&body);
