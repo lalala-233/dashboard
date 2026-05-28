@@ -5,10 +5,12 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0"
-reqwest = "0.13"
+reqwest = { version = "0.13", default-features = false, features = [
+    "default-tls",
+    "http2",
+] }
 scraper = "0.27"
 tokio = { version = "1.52", features = ["rt-multi-thread", "macros"] }
-
 
 [profile.release]
 incremental = true
