@@ -20,7 +20,8 @@ async fn _fetch_official_package_count_by_api(repo: &str) -> Result<u32> {
         .trim_end_matches('}');
     Ok(count_str.parse()?)
 }
-async fn fetch_package_count(url: &str) -> Result<u32> {
+async fn fetch_package_count(repo: &str) -> Result<u32> {
+    let url = format!("https://archlinux.org/packages/?sort=&repo={repo}&q=&maintainer=&flagged=");
     let body = reqwest::get(url).await?.text().await?;
     let document = Html::parse_document(&body);
 
@@ -83,32 +84,16 @@ async fn fetch_aur_stats() -> Result<Vec<String>> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let repos = [
-        (
-            "Core",
-            "https://archlinux.org/packages/?sort=&repo=Core&q=&maintainer=&flagged=",
-        ),
-        (
-            "Extra",
-            "https://archlinux.org/packages/?sort=&repo=Extra&q=&maintainer=&flagged=",
-        ),
-        (
-            "Multilib",
-            "https://archlinux.org/packages/?sort=&repo=Multilib&q=&maintainer=&flagged=",
-        ),
-    ];
+    let repos = ["Core", "Extra", "Multilib"];
 
     let aur_task = tokio::spawn(fetch_aur_stats());
     let mut repo_tasks = Vec::new();
-    for (name, url) in repos {
+    for repo in repos {
         let task = tokio::spawn(async move {
-            match fetch_package_count(url).await {
-                Ok(count) => (name, Some(count)),
-                Err(e) => {
-                    eprintln!("Failed to fetch {name} count: {e}");
-                    (name, None)
-                }
-            }
+            let result = fetch_package_count(repo)
+                .await
+                .inspect_err(|e| eprintln!("Failed to fetch {repo} count: {e}")).ok();
+            (repo, result)
         });
         repo_tasks.push(task);
     }
