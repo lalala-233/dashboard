@@ -1,9 +1,12 @@
 use anyhow::Result;
+use chrono::{SecondsFormat, Utc};
+use futures_util::future::join_all;
 use scraper::{Html, Selector};
-use std::{fmt::Display, time::Duration};
+use std::{env::args, fmt::Display, fs::File, io::Write, time::Duration};
 use tokio::time::sleep;
 
 const MAX_RETRIES: usize = 3;
+type Statistic = (String, Vec<(String, String)>);
 async fn retry<T, E, F, Fut>(f: F, max_retries: usize) -> Result<T, E>
 where
     F: Fn() -> Fut,
@@ -73,7 +76,7 @@ async fn fetch_package_count(repo: &str) -> Result<u32> {
     Ok(count)
 }
 
-async fn fetch_aur_stats() -> Result<Vec<String>> {
+async fn fetch_aur_stats() -> Result<Vec<(String, String)>> {
     let url = "https://aur.archlinux.org/";
     let body = retry(async || reqwest::get(url).await?.text().await, MAX_RETRIES).await?;
     let document = Html::parse_document(&body);
@@ -96,7 +99,7 @@ async fn fetch_aur_stats() -> Result<Vec<String>> {
             .map(|data| data.text().collect::<String>().trim().to_string())
             .collect();
         if table_data.len() == 2 {
-            results.extend(table_data);
+            results.push((table_data[0].clone(), table_data[1].clone()));
         } else {
             eprintln!(
                 "Error: Unexpected number of columns in row: {:?}",
@@ -108,46 +111,66 @@ async fn fetch_aur_stats() -> Result<Vec<String>> {
     Ok(results)
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let repos = ["Core", "Extra", "Multilib"];
+async fn fetch_statistics() -> Result<Vec<Statistic>> {
+    let repos = ["Core", "Extra", "Multilib"].map(std::string::ToString::to_string);
     let aur_task = tokio::spawn(fetch_aur_stats());
     let mut repo_tasks = Vec::new();
     for repo in repos {
-        let task = tokio::spawn(async move {
-            let result = fetch_package_count(repo)
+        let task = async move {
+            let result = fetch_package_count(&repo)
                 .await
-                .inspect_err(|e| eprintln!("Failed to fetch {repo} count: {e}"))
-                .ok();
+                .map_or_else(|_| "Error".to_string(), |count| count.to_string());
             (repo, result)
-        });
+        };
         repo_tasks.push(task);
     }
 
-    let aur_results = aur_task.await??;
-
-    let mut repo_counts = Vec::new();
-    for task in repo_tasks {
-        repo_counts.push(task.await?);
+    Ok(vec![
+        (
+            "Official Repository".to_string(),
+            join_all(repo_tasks).await,
+        ),
+        ("AUR".to_string(), aur_task.await??),
+    ])
+}
+fn print_table(results: Vec<Statistic>) {
+    for (name, data) in results {
+        println!("{}", "-".repeat(50));
+        println!("{name:<35} Value");
+        println!("{}", "-".repeat(50));
+        for (subname, value) in data {
+            println!("{subname:<35} {value}");
+        }
+        println!("{}\n", "-".repeat(50));
     }
+}
 
-    println!("{:<35} Value", "Statistic");
-    println!("{}", "-".repeat(50));
-    for [desc, value] in aur_results.as_chunks().0 {
-        println!("{desc:<35} {value}");
-    }
-
-    println!("\n{:<35} Value", "Official Repository");
-    println!("{}", "-".repeat(50));
-    let mut total = 0;
-    for (name, count_opt) in repo_counts {
-        if let Some(count) = count_opt {
-            println!("{name:<35} {count}");
-            total += count;
-        } else {
-            println!("{name:<35} Error");
+fn write_csv(results: Vec<Statistic>, mut file: File) -> Result<()> {
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    for (name, data) in results {
+        for (subname, value) in data {
+            writeln!(file, "{now},{name},{subname},{value}")?;
         }
     }
-    println!("{:<35} {}", "Total", total);
+    Ok(())
+}
+#[tokio::main]
+async fn main() -> Result<()> {
+    let results = fetch_statistics().await?;
+    let mut args = args();
+    args.next();
+    if args.next() == Some("--csv".to_string()) {
+        let path = args
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No path provided"))?;
+        let file = File::options()
+            .append(true)
+            .open(&path)
+            .map_err(|_| anyhow::anyhow!("Failed to open {path}"))?;
+        write_csv(results, file)?;
+    } else {
+        print_table(results);
+    }
+
     Ok(())
 }
