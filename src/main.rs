@@ -1,11 +1,37 @@
 use anyhow::Result;
 use scraper::{Html, Selector};
+use std::{fmt::Display, time::Duration};
+use tokio::time::sleep;
+
+const MAX_RETRIES: usize = 3;
+async fn retry<T, E, F, Fut>(f: F, max_retries: usize) -> Result<T, E>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: Display,
+{
+    let mut last_err: Option<E> = None;
+    for attempt in 1..=max_retries {
+        match f().await {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                eprintln!("Attempt {attempt}/{max_retries} failed: {e}");
+                last_err = Some(e);
+                if attempt < max_retries {
+                    sleep(Duration::from_millis(100 << attempt)).await;
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap())
+}
+
 // Use API to get official package count
 //
 // Slower because ArchLinux has rate limit.
 async fn _fetch_official_package_count_by_api(repo: &str) -> Result<u32> {
     let url = format!("https://archlinux.org/packages/search/json/?repo={repo}&limit=1");
-    let body = reqwest::get(&url).await?.text().await?;
+    let body = retry(async || reqwest::get(&url).await?.text().await, MAX_RETRIES).await?;
 
     let key = "\"count\":";
     let rest = body
@@ -22,7 +48,7 @@ async fn _fetch_official_package_count_by_api(repo: &str) -> Result<u32> {
 }
 async fn fetch_package_count(repo: &str) -> Result<u32> {
     let url = format!("https://archlinux.org/packages/?sort=&repo={repo}&q=&maintainer=&flagged=");
-    let body = reqwest::get(url).await?.text().await?;
+    let body = retry(async || reqwest::get(&url).await?.text().await, MAX_RETRIES).await?;
     let document = Html::parse_document(&body);
 
     let div_selector = Selector::parse("div.pkglist-stats").unwrap();
@@ -49,7 +75,7 @@ async fn fetch_package_count(repo: &str) -> Result<u32> {
 
 async fn fetch_aur_stats() -> Result<Vec<String>> {
     let url = "https://aur.archlinux.org/";
-    let body = reqwest::get(url).await?.text().await?;
+    let body = retry(async || reqwest::get(url).await?.text().await, MAX_RETRIES).await?;
     let document = Html::parse_document(&body);
 
     let div_selector = Selector::parse("div#pkg-stats")
@@ -85,14 +111,14 @@ async fn fetch_aur_stats() -> Result<Vec<String>> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let repos = ["Core", "Extra", "Multilib"];
-
     let aur_task = tokio::spawn(fetch_aur_stats());
     let mut repo_tasks = Vec::new();
     for repo in repos {
         let task = tokio::spawn(async move {
             let result = fetch_package_count(repo)
                 .await
-                .inspect_err(|e| eprintln!("Failed to fetch {repo} count: {e}")).ok();
+                .inspect_err(|e| eprintln!("Failed to fetch {repo} count: {e}"))
+                .ok();
             (repo, result)
         });
         repo_tasks.push(task);
